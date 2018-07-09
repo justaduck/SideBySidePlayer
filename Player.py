@@ -26,9 +26,6 @@ class Reader:
     def get_player(self):
         return self.player
 
-    def get_inst(self):
-        return self.inst
-
 
 class Video(Frame):
     def __init__(self, master, path=None):
