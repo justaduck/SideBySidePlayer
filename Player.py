@@ -6,25 +6,28 @@ import threading
 
 
 class Reader:
-    def __init__(self, frame_id):
+    def __init__(self, frame_id, play_button):
         self.frame_id = frame_id
-        self.video = None
+        self.play_button = play_button
         self.inst = vlc.Instance()
+        self.player = self.inst.media_player_new()
+        self.player.set_hwnd(self.frame_id.winfo_id())
+        events = self.player.event_manager()
+        events.event_attach(vlc.EventType.MediaPlayerEndReached, lambda e: self.play_button.configure(text="Play"))
+        self.video = None
+        self.media = None
 
     def read_video(self, video):
-        self.player = self.inst.media_player_new()
-        events = self.player.event_manager()
-        events.event_attach(vlc.EventType.MediaPlayerEndReached, self.eov)
-        self.player.set_hwnd(self.frame_id)
-        media = self.inst.media_new_path(video)
-        self.player.set_media(media)
+        self.video = video
+        self.media = self.inst.media_new(os.path.normpath(video))
+        self.player.set_media(self.media)
+        return
 
     def get_player(self):
         return self.player
 
-    def eov(self, evt):
-        self.player.release()
-        print(evt)
+    def get_inst(self):
+        return self.inst
 
 
 class Video(Frame):
@@ -46,7 +49,7 @@ class Video(Frame):
         return
 
     def get_frame_id(self):
-        return self.video_frame.winfo_id()
+        return self.video_frame
 
     def update_title(self, title):
         self.title.set(title)
@@ -66,7 +69,18 @@ class Player(Tk):
         self.readers = {}
         self.height = self.winfo_screenheight()
         self.width = self.winfo_screenwidth()
+        self.volume = 0
         self.create_widgets()
+
+        self.readers = {1: Reader(self.video1.get_frame_id(), self.play_button),
+                        2: Reader(self.video2.get_frame_id(), self.play_button)}
+        threading.Thread(target=self.readers[1])
+        threading.Thread(target=self.readers[2])
+
+        self.open_video(1, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-A.mov')
+        self.open_video(2, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-B.mp4')
+
+        self.bind_all("<space>", lambda e: self.play())
 
     def create_widgets(self):
         self.menubar = Menu(self)
@@ -76,48 +90,59 @@ class Player(Tk):
         self.fileMenu.add_command(label='Open Video 2', command=lambda: self.open_video(2))
         self.config(menu=self.menubar)
 
-        self.volume = 0
-        self.state = "paused"
         self.video1 = Video(self)
-        self.open_video(1, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-A.mov')
         self.video1.grid(row=0, column=0, padx=5)
         self.video2 = Video(self)
-        self.open_video(2, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-B.mp4')
         self.video2.grid(row=0, column=1, padx=5)
-        self.buttonBox()
 
-    def buttonBox(self):
         frm = Frame()
         frm.grid(row=1, columnspan=2)
-        self.play = Button(frm, text="Play", command=self.play)
+        self.play_button = Button(frm, text="Play", command=self.play)
         rewind = Button(frm, text="Restart", command=self.restart)
         volume_up = Button(frm, text="Vol Up", command=self.volume_up)
         volume_down = Button(frm, text="Vol Down", command=self.volume_down)
-        self.play.grid(row=1, column=0)
+        minus_5s = Button(frm, text="-5s", command=self.go_back)
+        plus_5s = Button(frm, text="+5s", command=self.go_forward)
+        minus_1f = Button(frm, text="-1f", command=self.step_back)
+        plus_1f = Button(frm, text="+1f", command=self.step_forward)
+
+        self.play_button.grid(row=1, column=0)
         rewind.grid(row=1, column=1)
         volume_down.grid(row=1, column=2)
         volume_up.grid(row=1, column=3)
+        minus_5s.grid(row=1, column=4)
+        plus_5s.grid(row=1, column=5)
+        minus_1f.grid(row=1, column=6)
+        plus_1f.grid(row=1, column=7)
+
+    def ended(self, num):
+        if num == 1:
+            self.open_video(1, self.video1.get_location())
+        if num == 2:
+            self.open_video(2, self.video2.get_location())
+        self.play()
 
     def play(self):
         if self.readers[1].get_player().get_state() == vlc.State.Ended:
-            self.readers[1].get_player().set_time(0)
-            self.readers[1].play()
-            self.readers[2].get_player().set_time(0)
-            self.readers[2].play()
-        elif self.state != "playing":
+            self.ended(1)
+        if self.readers[2].get_player().get_state() == vlc.State.Ended:
+            self.ended(2)
+        elif self.play_button['text'] == "Play":
             self.readers[1].get_player().play()
             self.readers[2].get_player().play()
-            self.play.configure(text="Pause")
-            self.state = "playing"
+            self.play_button.configure(text="Pause")
         else:
             self.readers[1].get_player().pause()
             self.readers[2].get_player().pause()
-            self.play.configure(text="Play")
-            self.state = "paused"
+            self.play_button.configure(text="Play")
 
     def restart(self):
-        self.readers[1].get_player().set_time(0)
-        self.readers[2].get_player().set_time(0)
+        if self.readers[1].get_player().get_state() != vlc.State.Ended:
+            self.readers[1].get_player().set_time(0)
+            self.readers[2].get_player().set_time(0)
+        else:
+            self.ended(1)
+            self.ended(2)
 
     def volume_up(self):
         if self.volume == 100:
@@ -126,6 +151,7 @@ class Player(Tk):
             self.volume += 5
             self.readers[1].get_player().audio_set_volume(self.volume)
             self.readers[2].get_player().audio_set_volume(self.volume)
+        return
 
     def volume_down(self):
         if self.volume == 0:
@@ -134,29 +160,93 @@ class Player(Tk):
             self.readers[1].get_player().audio_set_volume(self.volume-5)
             self.readers[2].get_player().audio_set_volume(self.volume-5)
             self.volume -= 5
+        return
+
+    def go_back(self):
+        curr_1 = self.readers[1].get_player().get_time()
+        curr_2 = self.readers[2].get_player().get_time()
+
+        target1 = curr_1 - 5000  # if curr_1 - 5000 > 0 else 0
+        target2 = curr_2 - 5000  # if curr_2 - 5000 > 0 else 0
+
+        self.readers[1].get_player().set_time(target1)
+        self.readers[2].get_player().set_time(target2)
+
+        return
+
+    def go_forward(self):
+        curr_1 = self.readers[1].get_player().get_time()
+        curr_2 = self.readers[2].get_player().get_time()
+
+        # len1 = self.readers[1].get_player().get_length()
+        # len2 = self.readers[1].get_player().get_length()
+
+        target1 = curr_1 + 5000  # if curr_1 + 5000 < len1 else len1
+        target2 = curr_2 + 5000  # if curr_2 + 5000 < len2 else len2
+
+        self.readers[1].get_player().set_time(target1)
+        self.readers[2].get_player().set_time(target2)
+        return
+
+    def step_back(self):
+        curr_1 = self.readers[1].get_player().get_time()
+        curr_2 = self.readers[2].get_player().get_time()
+
+        frm_1 = self.readers[1].get_player().get_fps()
+        frm_2 = self.readers[2].get_player().get_fps()
+
+        mspf1 = 1000/frm_1
+        mspf2 = 1000/frm_2
+
+        target1 = int(curr_1 - mspf1)
+        target2 = int(curr_2 - mspf2)
+
+        self.readers[1].get_player().set_time(target1)
+        self.readers[2].get_player().set_time(target2)
+        self.readers[1].get_player().set_pause(1)
+        self.readers[2].get_player().set_pause(1)
+        self.play_button.configure(text='Play')
+
+        return
+
+    def step_forward(self):
+        curr_1 = self.readers[1].get_player().get_time()
+        curr_2 = self.readers[2].get_player().get_time()
+
+        frm_1 = self.readers[1].get_player().get_fps()
+        frm_2 = self.readers[2].get_player().get_fps()
+
+        mspf1 = 1000 / frm_1
+        mspf2 = 1000 / frm_2
+
+        target1 = int(curr_1 + mspf1)
+        target2 = int(curr_2 + mspf2)
+
+        self.readers[1].get_player().set_time(target1)
+        self.readers[2].get_player().set_time(target2)
+        self.readers[1].get_player().set_pause(1)
+        self.readers[2].get_player().set_pause(1)
+        self.play_button.configure(text='Play')
+
+        return
 
     def open_video(self, number, fname=None):
+        self.readers[number].get_player().stop()
+        self.readers[(number % 2) + 1].get_player().pause()
         fname = fname if fname else tkFileDialog.askopenfilename(initialdir=os.path.expanduser("~"))
         if fname:
             title = os.path.split(fname)[1]
             if number == 1:
                 self.video1.set_location(fname)
                 self.video1.update_title(title)
-                if 1 not in self.readers:
-                    self.readers[1] = Reader(self.video1.get_frame_id())
-                    threading.Thread(target=self.readers[1])
                 self.readers[1].read_video(self.video1.get_location())
-                self.readers[1].get_player().audio_set_volume(self.volume)
             if number == 2:
                 self.video2.set_location(fname)
                 self.video2.update_title(title)
-                if 2 not in self.readers:
-                    self.readers[2] = Reader(self.video2.get_frame_id())
-                    threading.Thread(target=self.readers[2])
                 self.readers[2].read_video(self.video2.get_location())
-                self.readers[2].get_player().audio_set_volume(self.volume)
+            self.readers[number].get_player().audio_set_volume(self.volume)
         else:
-            return
+            self.readers[number].get_player().play()
 
 
 if __name__ == "__main__":
