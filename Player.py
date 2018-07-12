@@ -6,6 +6,9 @@ import vlc
 import threading
 
 
+lock = threading.Lock()
+
+
 class Reader:
     def __init__(self, frame_id, play_button):
         self.frame_id = frame_id
@@ -87,14 +90,23 @@ class Timer(threading.Thread):
         self.tick = tick
         self.num = video_number
         self.is_running = False
+        self.time = 0
 
     def run(self):
         while True:
-            while not self.stopFlag.wait(self.tick) and self.is_running:
-                self.callback(self.num)
+            lock.acquire(True)
+            while not self.stopFlag.wait(self.tick) and self.is_running and self.readers[self.num].isPlaying:
+                lock.release()
+                self.callback(self.num, self.time)
+                self.time += self.tick * 1000
+                lock.acquire(True)
+            lock.release()
+            if not self.readers[self.num].isPlaying:
+                self.is_running = False
         return
 
     def play(self):
+        self.time = self.readers[self.num].get_player().get_time()
         self.is_running = True
         return
 
@@ -118,9 +130,9 @@ class Player(Tk):
         threading.Thread(target=self.readers[1])
         threading.Thread(target=self.readers[2])
 
-        self.timer1 = Timer(self.readers, self.update_timer, 0.1, 1)
+        self.timer1 = Timer(self.readers, self.update_timer, 0.01, 1)
         self.timer1.start()
-        self.timer2 = Timer(self.readers, self.update_timer, 0.1, 2)
+        self.timer2 = Timer(self.readers, self.update_timer, 0.01, 2)
         self.timer2.start()
 
         self.bind_all("<space>", lambda e: self.play())
@@ -165,18 +177,18 @@ class Player(Tk):
             self.open_video(2, self.video2.get_location())
         self.play()
 
-    def update_timer(self, num):
-        if not self.readers[num].isPlaying:
-            return
-
-        ptime = self.readers[num].get_player().get_time()
-        tstamp = datetime.fromtimestamp(ptime/1000.0)
+    def update_timer(self, num, video_time_in_ms):
+        tstamp = datetime.fromtimestamp(video_time_in_ms/1000.0)
         epoch = datetime.fromtimestamp(0)
 
         if num == 1:
-            self.video1.set_time(str(tstamp - epoch)[:-5])
+            t = str(tstamp - epoch)
+            t = t[:-4] if '.' in t else t + ".00"
+            self.video1.set_time(t)
         if num == 2:
-            self.video2.set_time(str(tstamp - epoch)[:-5])
+            t = str(tstamp - epoch)
+            t = t[:-4] if '.' in t else t + ".00"
+            self.video2.set_time(t)
 
     def play(self):
         if self.readers[1].get_player().get_state() == vlc.State.Ended:
@@ -194,12 +206,14 @@ class Player(Tk):
                 self.timer2.play()
             self.play_button.configure(text="Pause")
         else:
-            self.readers[1].get_player().pause()
-            self.readers[1].set_playing(False)
-            self.timer1.stop()
             self.readers[2].get_player().pause()
+            self.update_timer(2, self.readers[2].get_player().get_time())
             self.readers[2].set_playing(False)
             self.timer2.stop()
+            self.readers[1].get_player().pause()
+            self.update_timer(1, self.readers[1].get_player().get_time())
+            self.readers[1].set_playing(False)
+            self.timer1.stop()
             self.play_button.configure(text="Play")
 
     def restart(self):
@@ -241,6 +255,14 @@ class Player(Tk):
         return
 
     def go_forward(self):
+        '''
+        Test code to go to 17000 ms
+
+        self.readers[1].get_player().set_time(17000)
+        self.readers[2].get_player().set_time(17000)
+        self.readers[1].get_player().set_pause(1)
+        self.readers[2].get_player().set_pause(1)
+        '''
         curr_1 = self.readers[1].get_player().get_time()
         curr_2 = self.readers[2].get_player().get_time()
 
