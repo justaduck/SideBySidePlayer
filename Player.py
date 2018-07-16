@@ -1,10 +1,10 @@
 import os
+import time
 import tkFileDialog
 from Tkinter import *
 from datetime import datetime
 import vlc
 import threading
-
 
 lock = threading.Lock()
 
@@ -30,6 +30,9 @@ class Reader:
         self.video = video
         self.media = self.inst.media_new(os.path.normpath(video))
         self.player.set_media(self.media)
+
+        self.player.set_time(0)
+        self.player.set_pause(1)
         return
 
     def get_player(self):
@@ -47,7 +50,6 @@ class Video(Frame):
         self.title.set(os.path.split(path)[1] if path else "Select a Video")
         self.path = path
         self.time = StringVar()
-        self.time.set("")
         self.setup_video()
 
     def setup_video(self):
@@ -82,37 +84,48 @@ class Video(Frame):
 
 
 class Timer(threading.Thread):
-    def __init__(self, readers, callback, tick, video_number):
+    def __init__(self, callback, tick, video_number, video):
         threading.Thread.__init__(self)
         self.stopFlag = threading.Event()
-        self.readers = readers
         self.callback = callback
         self.tick = tick
         self.num = video_number
         self.is_running = False
         self.time = 0
+        self.video = video
 
     def run(self):
         while True:
             lock.acquire(True)
-            while not self.stopFlag.wait(self.tick) and self.is_running and self.readers[self.num].isPlaying:
+            while not self.stopFlag.wait(self.tick) and self.is_running and self.video.isPlaying:
                 lock.release()
                 self.callback(self.num, self.time)
-                self.time += self.tick * 1000
+                done = datetime.now()
+                delta = (done-self.previous).total_seconds() * 1000
+                self.time += delta
+                self.previous = datetime.now()
                 lock.acquire(True)
-            lock.release()
-            if not self.readers[self.num].isPlaying:
-                self.is_running = False
+            if lock.locked():
+                lock.release()
         return
 
     def play(self):
-        self.time = self.readers[self.num].get_player().get_time()
+        self.time = self.video.get_player().get_time()
+        self.previous = datetime.now()
         self.is_running = True
         return
 
     def stop(self):
+        self.time = self.video.get_player().get_time()
+        self.callback(self.num, self.time)
         self.is_running = False
         return
+
+    def time_delta(self, delta):
+        self.time += delta
+
+    def grab_time(self):
+        self.time = self.video.get_player().get_time()
 
 
 class Player(Tk):
@@ -124,18 +137,24 @@ class Player(Tk):
         self.volume = 0
         self.create_widgets()
         self.wm_resizable(0, 0)
-
         self.readers = {1: Reader(self.video1.get_frame_id(), self.play_button),
                         2: Reader(self.video2.get_frame_id(), self.play_button)}
         threading.Thread(target=self.readers[1])
         threading.Thread(target=self.readers[2])
 
-        self.timer1 = Timer(self.readers, self.update_timer, 0.01, 1)
+        self.timer1 = Timer(self.update_timer, 0.01, 1, self.readers[1])
         self.timer1.start()
-        self.timer2 = Timer(self.readers, self.update_timer, 0.01, 2)
+        self.timer2 = Timer(self.update_timer, 0.01, 2, self.readers[2])
         self.timer2.start()
 
+        self.open_video(1, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-A.mov')
+        self.open_video(2, r'C:\Users\FirschingJ\Desktop\test_player\1b4594ef00d9a398798009eaafe20ec9-B.mp4')
+
         self.bind_all("<space>", lambda e: self.play())
+        self.bind_all("<Right>", lambda e: self.step_forward())
+        self.bind_all("<Left>", lambda e: self.step_back())
+        self.bind_all("<Up>", lambda e: self.volume_up())
+        self.bind_all("<Down>", lambda e: self.volume_down())
 
     def create_widgets(self):
         self.menubar = Menu(self)
@@ -191,29 +210,39 @@ class Player(Tk):
             self.video2.set_time(t)
 
     def play(self):
+        line_up_needed = False
         if self.readers[1].get_player().get_state() == vlc.State.Ended:
             self.ended(1)
+            line_up_needed = True
         if self.readers[2].get_player().get_state() == vlc.State.Ended:
             self.ended(2)
+            line_up_needed = True
+
+        if line_up_needed:
+            self.line_up()
+
         if self.play_button['text'] == "Play":
             if self.video1.get_location():
                 self.readers[1].get_player().play()
                 self.readers[1].set_playing(True)
-                self.timer1.play()
             if self.video2.get_location():
                 self.readers[2].get_player().play()
                 self.readers[2].set_playing(True)
+            if self.video1.get_location() or self.video2.get_location():
+                self.play_button.configure(text="Pause")
+                self.timer1.play()
                 self.timer2.play()
-            self.play_button.configure(text="Pause")
         else:
-            self.readers[2].get_player().pause()
-            self.update_timer(2, self.readers[2].get_player().get_time())
-            self.readers[2].set_playing(False)
-            self.timer2.stop()
-            self.readers[1].get_player().pause()
-            self.update_timer(1, self.readers[1].get_player().get_time())
-            self.readers[1].set_playing(False)
-            self.timer1.stop()
+            if self.video2.get_location():
+                self.readers[2].get_player().pause()
+                self.update_timer(2, self.readers[2].get_player().get_time())
+                self.readers[2].set_playing(False)
+                self.timer2.stop()
+            if self.video1.get_location():
+                self.readers[1].get_player().pause()
+                self.update_timer(1, self.readers[1].get_player().get_time())
+                self.readers[1].set_playing(False)
+                self.timer1.stop()
             self.play_button.configure(text="Play")
 
     def restart(self):
@@ -252,17 +281,11 @@ class Player(Tk):
         self.readers[1].get_player().set_time(target1)
         self.readers[2].get_player().set_time(target2)
 
+        self.timer1.grab_time()
+        self.timer2.grab_time()
         return
 
     def go_forward(self):
-        '''
-        Test code to go to 17000 ms
-
-        self.readers[1].get_player().set_time(17000)
-        self.readers[2].get_player().set_time(17000)
-        self.readers[1].get_player().set_pause(1)
-        self.readers[2].get_player().set_pause(1)
-        '''
         curr_1 = self.readers[1].get_player().get_time()
         curr_2 = self.readers[2].get_player().get_time()
 
@@ -274,6 +297,9 @@ class Player(Tk):
 
         self.readers[1].get_player().set_time(target1)
         self.readers[2].get_player().set_time(target2)
+
+        self.timer1.grab_time()
+        self.timer2.grab_time()
         return
 
     def step_back(self):
@@ -333,8 +359,20 @@ class Player(Tk):
                 self.video2.update_title(title)
                 self.readers[2].read_video(self.video2.get_location())
             self.readers[number].get_player().audio_set_volume(self.volume)
+
+            self.line_up()
+
         else:
             self.readers[number].get_player().play()
+
+    def line_up(self):
+        self.play()
+        time.sleep(1)
+        self.play()
+        self.video1.set_time(0)
+        self.video2.set_time(0)
+        self.readers[1].get_player().set_time(0)
+        self.readers[2].get_player().set_time(0)
 
 
 if __name__ == "__main__":
